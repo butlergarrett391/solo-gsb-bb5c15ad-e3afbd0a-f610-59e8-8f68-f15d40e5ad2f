@@ -23,21 +23,68 @@ test('审计：干净 1×2 折帖全部通过，结论可发布', () => {
   });
 });
 
-test('审计：未标注方案报空白页码与未覆盖纸格（警告，不阻断发布）', () => {
-  const r = E.auditPlan(2, 2, {}, STEPS_2x2);
+test('审计：未标注方案报空白页码与未覆盖纸格（警告）', () => {
+  // 1×2 单竖折：无水平折，所有面片正立，纯空白方案只有警告、结论可发布
+  const r = E.auditPlan(1, 2, {}, [{ axis: 'v', line: 1, dir: 'r' }]);
   assert.equal(r.ok, true);
   assert.equal(r.verdict, 'pass', '仅警告时结论仍为可发布');
   assert.equal(r.summary.errors, 0);
-  assert.equal(r.summary.warnings, 12);          // 8 空白面 + 4 未覆盖格
+  assert.equal(r.summary.warnings, 6);           // 4 空白面 + 2 未覆盖格
   const blanks = r.findings.filter((f) => f.id === 'blank_page');
   const uncovered = r.findings.filter((f) => f.id === 'uncovered_cell');
-  assert.equal(blanks.length, 8);
-  assert.equal(uncovered.length, 4);
+  assert.equal(blanks.length, 4);
+  assert.equal(uncovered.length, 2);
   assert.ok(blanks.every((f) => f.severity === 'warning' && f.cells.length === 1));
-  assert.deepEqual(uncovered.map((f) => f.cells[0]).sort(),
-    ['0,0', '0,1', '1,0', '1,1']);
+  assert.deepEqual(uncovered.map((f) => f.cells[0]).sort(), ['0,0', '1,0']);
+  assert.equal(r.stats.blankFaces, 4);
+  assert.equal(r.stats.labeledFaces, 0);
+});
+
+test('审计：先竖折再水平折的空白倒置槽位不再漏报（错误 → 需修订）', () => {
+  // 2×2 全部面未标注：水平折使槽位 1/2/7/8 倒置，空白倒置同样是交付错误
+  const r = E.auditPlan(2, 2, {}, STEPS_2x2);
+  assert.equal(r.ok, true);
+  assert.equal(r.verdict, 'fail', '倒置空白槽不得再显示“可发布”');
+  assert.equal(r.summary.errors, 4);
+  assert.equal(r.summary.warnings, 12);          // 8 空白面 + 4 未覆盖格（统计不变）
+  const inv = r.findings.filter((f) => f.id === 'inverted_page');
+  assert.equal(inv.length, 4);
+  assert.ok(inv.every((f) => f.severity === 'error'));
+  // 每条含原始纸格、面别与槽位，且空白槽文案不虚构页码
+  assert.deepEqual(inv.map((f) => f.details[0].slot), [1, 2, 7, 8]);
+  assert.deepEqual(inv.map((f) => `${f.details[0].cell}:${f.details[0].face}`),
+    ['1,0:back', '0,0:front', '0,0:back', '1,0:front']);
+  for (const f of inv) {
+    assert.equal(f.details[0].label, null);
+    assert.ok(f.message.includes('空白面'), '空白槽须明示未标注，不得虚构页码');
+    assert.ok(!f.message.includes('“”') && !/“\s*”/.test(f.message));
+    assert.ok(f.message.includes(`原格(${f.details[0].cell})`));
+    assert.ok(f.message.includes(`第 ${f.details[0].slot} 槽`));
+  }
+  // 空白/未覆盖统计与结构保持兼容
+  assert.equal(r.findings.filter((f) => f.id === 'blank_page').length, 8);
+  assert.equal(r.findings.filter((f) => f.id === 'uncovered_cell').length, 4);
   assert.equal(r.stats.blankFaces, 8);
   assert.equal(r.stats.labeledFaces, 0);
+});
+
+test('审计：部分标注时倒置槽按有无标签分别给出文案', () => {
+  // 仅标注 0,0 正面（落在倒置槽 2）：该槽报真实页码，其余倒置空白槽不虚构页码
+  const r = E.auditPlan(2, 2, L({ '0,0': ['5', ''] }), STEPS_2x2);
+  assert.equal(r.ok, true);
+  assert.equal(r.verdict, 'fail');
+  const inv = r.findings.filter((f) => f.id === 'inverted_page');
+  assert.equal(inv.length, 4);
+  const labeled = inv.filter((f) => f.details[0].label != null);
+  const blank = inv.filter((f) => f.details[0].label == null);
+  assert.equal(labeled.length, 1);
+  assert.equal(blank.length, 3);
+  assert.ok(labeled[0].message.includes('“5”'), '已标注槽仍报真实页码');
+  assert.ok(blank.every((f) => f.message.includes('空白面') && !f.message.includes('页码 “')));
+  // 统计兼容：7 空白面 + 1 已标注面
+  assert.equal(r.stats.blankFaces, 7);
+  assert.equal(r.stats.labeledFaces, 1);
+  assert.equal(r.findings.filter((f) => f.id === 'blank_page').length, 7);
 });
 
 test('审计：完整标注的 8 页折帖检出倒置页码（错误 → 需修订）', () => {

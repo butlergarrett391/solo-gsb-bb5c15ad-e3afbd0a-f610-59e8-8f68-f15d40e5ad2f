@@ -868,7 +868,9 @@ function trackPanel(rows, cols, labels, steps, target) {
  *
  *   duplicate_page     重复页码：同一页码标注在多个面上            —— error
  *   split_stacks       最终分离叠层：全部折叠后仍未收成单叠        —— error
- *   inverted_page      倒置页码：阅读序列中倒置 180° 的非空白页    —— error
+ *   inverted_page      倒置页码：阅读序列中倒置 180° 的槽位
+ *                      （含未标注的空白槽：空白面倒置同样无法交付，
+ *                      文案不虚构页码）                            —— error
  *   capacity_mismatch  折叠后容量异常：叶子/阅读面总数与纸格容量
  *                      不一致（引擎守恒校验，正常方案不会触发）    —— error
  *   blank_page         空白页码：阅读序列中的空白槽位              —— warning
@@ -968,13 +970,15 @@ function auditPlan(rows, cols, labels, steps) {
     slots.forEach((s, si) => {
       const view = s.part === 'upper' ? s.leaf.upper : s.leaf.lower;
       const where = { cell: s.leaf.panelId, face: view.face, slot: si + 1, stack: gi + 1 };
+      // 先独立记录朝向：倒置与是否标注无关，空白槽倒置同样是交付错误
+      if (!view.upright) inverted.push({ ...where, label: view.label });
+      // 再按有无标签分别统计：重复页码 / 空白页
       if (view.label == null) {
         blanks.push(where);
       } else {
         labeledFaces++;
         if (!occurrences.has(view.label)) occurrences.set(view.label, []);
         occurrences.get(view.label).push(where);
-        if (!view.upright) inverted.push({ ...where, label: view.label });
       }
     });
   });
@@ -990,7 +994,9 @@ function auditPlan(rows, cols, labels, steps) {
   }
   for (const w of inverted) {
     add('inverted_page', 'error', '倒置页码',
-      `原格(${w.cell})·${faceName[w.face]} 的页码 “${w.label}” 在${slotText(w)}倒置 180°。`,
+      w.label == null
+        ? `原格(${w.cell})·${faceName[w.face]}（空白面，未标注页码）在${slotText(w)}倒置 180°。`
+        : `原格(${w.cell})·${faceName[w.face]} 的页码 “${w.label}” 在${slotText(w)}倒置 180°。`,
       [w.cell], [w]);
   }
   for (const w of blanks) {
