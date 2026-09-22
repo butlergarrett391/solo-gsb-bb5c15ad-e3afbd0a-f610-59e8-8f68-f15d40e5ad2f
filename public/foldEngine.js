@@ -868,10 +868,13 @@ function trackPanel(rows, cols, labels, steps, target) {
  *
  *   duplicate_page     重复页码：同一页码标注在多个面上            —— error
  *   split_stacks       最终分离叠层：全部折叠后仍未收成单叠        —— error
- *   inverted_page      倒置页码：阅读序列中倒置 180° 的非空白页    —— error
+ *   inverted_page      倒置阅读槽：阅读序列中倒置 180° 的槽位；
+ *                      非空槽为倒置页码，空白槽为倒置空白面，
+ *                      二者同为错误（空白槽不虚构页码）            —— error
  *   capacity_mismatch  折叠后容量异常：叶子/阅读面总数与纸格容量
  *                      不一致（引擎守恒校验，正常方案不会触发）    —— error
- *   blank_page         空白页码：阅读序列中的空白槽位              —— warning
+ *   blank_page         空白页码：阅读序列中的空白槽位（可能同时
+ *                      附带 inverted_page 倒置错误）               —— warning
  *   uncovered_cell     未覆盖纸格：正反面皆空白、未承载页码        —— warning
  *   capacity_multiple  单叠总页数非 4 的倍数（骑马钉交付需确认）   —— warning
  *
@@ -955,7 +958,10 @@ function auditPlan(rows, cols, labels, steps) {
       []);
   }
 
-  // —— 逐槽位检查：重复 / 空白 / 倒置（槽位序 = 封面→封底阅读序）——
+  // —— 逐槽位检查：朝向 / 重复 / 空白（槽位序 = 封面→封底阅读序）——
+  // 朝向必须对每个阅读槽独立记录：倒置是面片末态标架属性，与该面是否
+  // 标注无关。若只在非空标签分支记录，倒置空白槽会漏报 error 级问题，
+  // 只剩空白警告，审计结论可能错误地给出“可发布”。
   const occurrences = new Map();   // label -> [{ cell, face, slot, stack }]
   const blanks = [];
   const inverted = [];
@@ -968,13 +974,16 @@ function auditPlan(rows, cols, labels, steps) {
     slots.forEach((s, si) => {
       const view = s.part === 'upper' ? s.leaf.upper : s.leaf.lower;
       const where = { cell: s.leaf.panelId, face: view.face, slot: si + 1, stack: gi + 1 };
+      // 先记录朝向：无论该槽有无页码标注，倒置 180° 都是交付错误
+      if (!view.upright) {
+        inverted.push({ ...where, label: view.label == null ? null : view.label, blank: view.label == null });
+      }
       if (view.label == null) {
         blanks.push(where);
       } else {
         labeledFaces++;
         if (!occurrences.has(view.label)) occurrences.set(view.label, []);
         occurrences.get(view.label).push(where);
-        if (!view.upright) inverted.push({ ...where, label: view.label });
       }
     });
   });
@@ -989,9 +998,17 @@ function auditPlan(rows, cols, labels, steps) {
       occ);
   }
   for (const w of inverted) {
-    add('inverted_page', 'error', '倒置页码',
-      `原格(${w.cell})·${faceName[w.face]} 的页码 “${w.label}” 在${slotText(w)}倒置 180°。`,
-      [w.cell], [w]);
+    if (w.blank) {
+      // 空白槽没有页码，文案只描述位置与朝向，绝不虚构页码
+      add('inverted_page', 'error', '倒置空白槽位',
+        `${slotText(w)}为倒置 180° 的空白面（原格(${w.cell})·${faceName[w.face]} 未标注页码），` +
+        '该阅读槽朝向错误，补印或排版时页码将倒置。',
+        [w.cell], [w]);
+    } else {
+      add('inverted_page', 'error', '倒置页码',
+        `原格(${w.cell})·${faceName[w.face]} 的页码 “${w.label}” 在${slotText(w)}倒置 180°。`,
+        [w.cell], [w]);
+    }
   }
   for (const w of blanks) {
     add('blank_page', 'warning', '空白页码',

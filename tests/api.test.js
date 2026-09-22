@@ -395,6 +395,31 @@ test('POST /api/audit：重复/空白/倒置/未覆盖按严重级别汇总为�
     f.severity && f.title && f.message && Array.isArray(f.cells)));
 });
 
+test('POST /api/audit：倒置空白槽（无任何标注）也判为需修订', async () => {
+  // 回归：2×2 先竖折再水平折、全部面未标注时，旧版只返回空白警告、
+  // verdict 错误给出 pass；倒置空白槽现在必须产生 error 级 inverted_page。
+  const r = await post('/api/audit', { rows: 2, cols: 2, labels: {}, steps: STEPS });
+  assert.equal(r.status, 200);
+  assert.equal(r.json.ok, true);
+  assert.equal(r.json.verdict, 'fail');
+  const inv = r.json.findings.filter((f) => f.id === 'inverted_page');
+  assert.equal(inv.length, 4);
+  assert.ok(inv.every((f) => f.severity === 'error'));
+  for (const f of inv) {
+    const w = f.details[0];
+    assert.equal(w.blank, true);
+    assert.equal(w.label, null);
+    assert.ok(typeof w.slot === 'number');
+    assert.ok(['front', 'back'].includes(w.face));
+    assert.ok(/^\d+,\d+$/.test(w.cell));
+    assert.ok(!/“[^”]+”/.test(f.message), '空白槽文案不得虚构页码');
+  }
+  // 空白警告与统计结构保持兼容
+  assert.equal(r.json.findings.filter((f) => f.id === 'blank_page').length, 8);
+  assert.equal(r.json.stats.blankFaces, 8);
+  assert.equal(r.json.stats.labeledFaces, 0);
+});
+
 test('POST /api/audit：未收成单叠报分离叠层错误', async () => {
   const r = await post('/api/audit', {
     rows: 2, cols: 3, labels: {},
